@@ -124,6 +124,10 @@ def make_context(
     max_window_size: int = 6144,
     chat_format: str = "chatml",
 ):
+    # system: "You are a helpful assistant."
+    # max_window_size: 6144
+    # chat_format: "chatml"
+
     if history is None:
         history = []
 

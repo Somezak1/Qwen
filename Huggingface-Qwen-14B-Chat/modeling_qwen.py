@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import warnings
+from torch.cuda.amp import autocast
 
 from torch.nn import CrossEntropyLoss
 from transformers import PreTrainedTokenizer, GenerationConfig, StoppingCriteriaList
@@ -250,21 +251,29 @@ class QWenAttention(nn.Module):
 
         self.register_buffer("masked_bias", torch.tensor(-1e4), persistent=False)
         self.seq_length = config.seq_length
+        # self.seq_length: 2048
 
+        # config.hidden_size: 5120
         self.hidden_size = config.hidden_size
         self.split_size = config.hidden_size
         self.num_heads = config.num_attention_heads
+        # self.num_heads: 40
         self.head_dim = self.hidden_size // self.num_heads
+        # self.head_dim: 128
 
         self.use_flash_attn = config.use_flash_attn
+        # self.use_flash_attn: True
         self.scale_attn_weights = True
 
+        # config.kv_channels: 128
+        # self.projection_size: 5120
         self.projection_size = config.kv_channels * config.num_attention_heads
 
         assert self.projection_size % config.num_attention_heads == 0
         self.hidden_size_per_attention_head = (
             self.projection_size // config.num_attention_heads
         )
+        # self.hidden_size_per_attention_head: 128
 
         self.c_attn = nn.Linear(config.hidden_size, 3 * self.projection_size)
 
@@ -322,6 +331,7 @@ class QWenAttention(nn.Module):
 
     def _attn(self, query, key, value, causal_mask=None, attention_mask=None, head_mask=None):
         device = query.device
+        # self.use_cache_quantization: False
         if self.use_cache_quantization:
             qk, qk_scale, qk_zero = key
             if self.use_cache_kernel and self.cache_kernels is not None:
@@ -413,24 +423,43 @@ class QWenAttention(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
     ):
+        # hidden_states: torch.Size([b, s, h]), dtype: torch.bfloat16
+        # rotary_pos_emb_list: rotary_pos_emb_list: [[torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]], dtype: torch.float32
+        # layer_past: None
+        # attention_mask: torch.Size([b, 1, 1, s]), dtype: torch.bfloat16
+        # head_mask: None
+        # encoder_hidden_states: None
+        # encoder_attention_mask: None
+        # output_attentions: False
+        # use_cache: False
+
         mixed_x_layer = self.c_attn(hidden_states)
+        # mixed_x_layer.shape: [b, s, 3h]
 
         query, key, value = mixed_x_layer.split(self.split_size, dim=2)
+        # query, key, value.shape: [b, s, h]
 
         query = self._split_heads(query, self.num_heads, self.head_dim)
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
+        # query, key, value.shape: [b, s, 40, 128]
 
         if rotary_pos_emb_list is not None:
             cur_len = query.shape[1]
             if len(rotary_pos_emb_list) == 1:
                 rotary_pos_emb = rotary_pos_emb_list[0]
                 rotary_pos_emb = [i[:, -cur_len:, :, :] for i in rotary_pos_emb]
+                # rotary_pos_emb: [torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]
                 rotary_pos_emb = (rotary_pos_emb,) * 2
+                # rotary_pos_emb: ([torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])], [torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])])
                 q_pos_emb, k_pos_emb = rotary_pos_emb
+                # q_pos_emb: [torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]
+                # k_pos_emb: [torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]
+                # q_pos_emb 与 k_pos_emb 相同
                 # Slice the pos emb for current inference
                 query = apply_rotary_pos_emb(query, q_pos_emb)
                 key = apply_rotary_pos_emb(key, k_pos_emb)
+                # query, key.shape: [b, s, 40, 128]
             else:
                 query_list = []
                 key_list = []
@@ -444,6 +473,7 @@ class QWenAttention(nn.Module):
                 query = torch.cat(query_list, dim=0)
                 key = torch.cat(key_list, dim=0)
 
+        # self.use_cache_quantization: False
         if self.use_cache_quantization:
             key = quantize_cache_v(key.permute(0, 2, 1, 3),
                                        bits=8,
@@ -455,6 +485,7 @@ class QWenAttention(nn.Module):
                                          qmax=self.cache_qmax)
 
 
+        # layer_past: None
         if layer_past is not None:
             past_key, past_value = layer_past[0], layer_past[1]
             if self.use_cache_quantization:
@@ -473,11 +504,13 @@ class QWenAttention(nn.Module):
                 key = torch.cat((past_key, key), dim=1)
                 value = torch.cat((past_value, value), dim=1)
 
+        # use_cache: False
         if use_cache:
             present = (key, value)
         else:
             present = None
 
+        # self.use_logn_attn: True
         key_size = key[0].size(2) if self.use_cache_quantization else key.size(1)
         if key_size > self.seq_length and self.use_logn_attn and not self.training:
             if self.use_cache_quantization:
@@ -489,15 +522,21 @@ class QWenAttention(nn.Module):
             logn_tensor = self.logn_tensor[:, seq_start:seq_end, :, :].type_as(query)
             query = query * logn_tensor.expand_as(query)
 
+        # self.use_flash_attn: True
+        # self.is_fp32: False
         if (
             self.use_flash_attn
             and flash_attn_unpadded_func is not None
             and not self.is_fp32
             and query.is_cuda
         ):
+            # 如果安装了FlashAttn则用FlashAttn计算, 那么定义的self.attn_dropout用不到, 但会在FlashAttn中使用p=0.0的Dropout
             q, k, v = query, key, value
+            # query, key, value.shape: [b, s, 40, 128]
             attn_output = self.core_attention_flash(q, k, v, attention_mask=attention_mask)
+            # attn_output.shape: [b, s, 40, 128]
         else:
+            # 如果没安装FlashAttn就用常规方法计算, 并且定义的self.attn_dropout会被显式调用
             key_size = key[0].size(2) if self.use_cache_quantization else key.size(1)
             if query.size(1) == key_size:
                 causal_mask = torch.tril(
@@ -533,13 +572,19 @@ class QWenAttention(nn.Module):
                 attn_output, attn_weight = self._attn(
                     query, key, value, causal_mask, attention_mask, head_mask
                 )
+        # attn_output.shape: [b, s, 40, 128]
         context_layer = self._merge_heads(
             attn_output, self.num_heads, self.head_dim
         )
+        # context_layer.shape: [b, s, h]
 
         attn_output = self.c_proj(context_layer)
+        # attn_output.shape: [b, s, h]
 
         outputs = (attn_output, present)
+        # present: None
+
+        # output_attentions: False
         if output_attentions:
             if (
                 self.use_flash_attn
@@ -561,6 +606,8 @@ class QWenMLP(nn.Module):
         self.w1 = nn.Linear(
             config.hidden_size, config.intermediate_size // 2, bias=not config.no_bias
         )
+        # config.intermediate_size // 2: 13696
+        # config.no_bias: True
         self.w2 = nn.Linear(
             config.hidden_size, config.intermediate_size // 2, bias=not config.no_bias
         )
@@ -585,6 +632,7 @@ class QWenBlock(nn.Module):
             hidden_size,
             eps=config.layer_norm_epsilon,
         )
+        # config.layer_norm_epsilon: 1e-6
         self.attn = QWenAttention(config)
         self.ln_2 = RMSNorm(
             hidden_size,
@@ -605,7 +653,18 @@ class QWenBlock(nn.Module):
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
     ):
+        # hidden_states: torch.Size([b, s, h]), dtype: torch.bfloat16
+        # rotary_pos_emb_list: rotary_pos_emb_list: [[torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]], dtype: torch.float32
+        # layer_past: None
+        # attention_mask: torch.Size([b, 1, 1, s]), dtype: torch.bfloat16
+        # head_mask: None
+        # encoder_hidden_states: None
+        # encoder_attention_mask: None
+        # use_cache: False
+        # output_attentions: False
+
         layernorm_output = self.ln_1(hidden_states)
+        # layernorm_output: torch.Size([b, s, h]), dtype: torch.bfloat16
 
         attn_outputs = self.attn(
             layernorm_output,
@@ -617,22 +676,29 @@ class QWenBlock(nn.Module):
             output_attentions=output_attentions,
         )
         attn_output = attn_outputs[0]
+        # attn_output: torch.Size([b, s, h]), dtype: torch.bfloat16
 
         outputs = attn_outputs[1:]
+        # outputs: [None]
 
         residual = hidden_states
         layernorm_input = attn_output + residual
 
         layernorm_output = self.ln_2(layernorm_input)
+        # layernorm_output: torch.Size([b, s, h]), dtype: torch.bfloat16
 
         residual = layernorm_input
         mlp_output = self.mlp(layernorm_output)
+        # mlp_output: torch.Size([b, s, h]), dtype: torch.bfloat16
         hidden_states = residual + mlp_output
+        # hidden_states: torch.Size([b, s, h]), dtype: torch.bfloat16
 
+        # use_cache: False
         if use_cache:
             outputs = (hidden_states,) + outputs
         else:
             outputs = (hidden_states,) + outputs[1:]
+            # outputs: (hidden_states)
 
         return outputs
 
@@ -682,18 +748,26 @@ class QWenModel(QWenPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.vocab_size = config.vocab_size
+        # self.vocab_size: 152064
         self.num_hidden_layers = config.num_hidden_layers
+        # self.num_hidden_layers: 40
         self.embed_dim = config.hidden_size
+        # self.embed_dim: 5120
         self.use_cache_quantization = self.config.use_cache_quantization if hasattr(self.config, 'use_cache_quantization') else False
+        # self.use_cache_quantization: False
 
         self.gradient_checkpointing = False
         self.use_dynamic_ntk = config.use_dynamic_ntk
+        # self.use_dynamic_ntk: True
         self.seq_length = config.seq_length
+        # self.seq_length: 2048
 
         self.wte = nn.Embedding(self.vocab_size, self.embed_dim)
 
+        # config.emb_dropout_prob: 0.0
         self.drop = nn.Dropout(config.emb_dropout_prob)
 
+        # config.rotary_pct: 1.0
         if config.rotary_pct == 1.0:
             self.rotary_ndims = None
         else:
@@ -706,10 +780,14 @@ class QWenModel(QWenPreTrainedModel):
             if self.rotary_ndims is not None
             else config.kv_channels
         )
+        # dim, config.kv_channels: 128
         self.rotary_emb = RotaryEmbedding(dim, base=config.rotary_emb_base)
+        # config.rotary_emb_base: 10000
 
         self.use_flash_attn = config.use_flash_attn
+        # self.use_flash_attn: True
         self.is_fp32 = not (config.bf16 or config.fp16)
+        # self.is_fp32: False
 
         self.h = nn.ModuleList(
             [
@@ -723,6 +801,7 @@ class QWenModel(QWenPreTrainedModel):
             self.embed_dim,
             eps=config.layer_norm_epsilon,
         )
+        # config.layer_norm_epsilon: 1e-6
 
         self.post_init()
 
@@ -754,20 +833,39 @@ class QWenModel(QWenPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ):
+
+        # input_ids: torch.Size([b, s]), dtype: torch.int64
+        # past_key_values: None
+        # attention_mask: torch.Size([b, s]), dtype: torch.bool
+        # token_type_ids: None
+        # position_ids: None
+        # head_mask: None
+        # inputs_embeds: None
+        # encoder_hidden_states: None
+        # encoder_attention_mask: None
+        # use_cache: None
+        # output_attentions: None
+        # output_hidden_states: None
+        # return_dict: True
+
         output_attentions = (
             output_attentions
             if output_attentions is not None
             else self.config.output_attentions
         )
+        # output_attentions: False
         output_hidden_states = (
             output_hidden_states
             if output_hidden_states is not None
             else self.config.output_hidden_states
         )
+        # output_hidden_states: False
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+        # use_cache: False
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
+        # return_dict: True
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError(
@@ -785,19 +883,26 @@ class QWenModel(QWenPreTrainedModel):
 
         device = input_ids.device if input_ids is not None else inputs_embeds.device
 
+        # token_type_ids: None
         if token_type_ids is not None:
             token_type_ids = token_type_ids.view(-1, input_shape[-1])
+
+        # position_ids: None
         if position_ids is not None:
             position_ids = position_ids.view(-1, input_shape[-1])
 
+        # past_key_values: None
         if past_key_values is None:
             past_length = 0
             past_key_values = tuple([None] * len(self.h))
+            # past_key_values: 一个包含40个None的元组
         else:
             if self.use_cache_quantization:
                 past_length = past_key_values[0][0][0].size(2)
             else:
                 past_length = past_key_values[0][0].size(-2)
+
+        # position_ids: None
         if position_ids is None:
             position_ids = torch.arange(
                 past_length,
@@ -806,7 +911,11 @@ class QWenModel(QWenPreTrainedModel):
                 device=device,
             )
             position_ids = position_ids.unsqueeze(0).view(-1, input_shape[-1])
+            # position_ids.shape: [1, s], dtype: torch.int64
 
+        # attention_mask.shape: [b, s], dtype: torch.bool
+        # attention_mask[i]: 是一个长度s且由True和False组成的数组
+        # padding部分的token为False, 其余为True
         if attention_mask is not None:
             if batch_size <= 0:
                 raise ValueError("batch_size has to be defined and > 0")
@@ -814,15 +923,23 @@ class QWenModel(QWenPreTrainedModel):
             attention_mask = attention_mask[:, None, None, :]
             attention_mask = attention_mask.to(dtype=self.dtype)
             attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+            # attention_mask.shape: [b, 1, 1, s], dtype: torch.bfloat16
+            # 将attention_mask中的True替换为0, False替换为一个无穷小的值
 
         encoder_attention_mask = None
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
+        # head_mask: 一个包含40个None的列表
 
         if inputs_embeds is None:
+            # input_ids: torch.Size([b, s]), dtype: torch.int64
             inputs_embeds = self.wte(input_ids)
         hidden_states = inputs_embeds
+        # inputs_embeds, hidden_states.shape: [b, s, h], dtype: torch.bfloat16
 
         kv_seq_len = hidden_states.size()[1]
+        # kv_seq_len: s
+
+        # past_key_values[0]: None
         if past_key_values[0] is not None:
             # past key values[0][0] shape: bs * seq_len * head_num * dim
             if self.use_cache_quantization:
@@ -830,6 +947,8 @@ class QWenModel(QWenPreTrainedModel):
             else:
                 kv_seq_len += past_key_values[0][0].shape[1]
 
+        # self.training: True
+        # self.use_dynamic_ntk: True
         if self.training or not self.use_dynamic_ntk:
             ntk_alpha_list = [1.0]
         elif kv_seq_len != hidden_states.size()[1]:
@@ -845,14 +964,19 @@ class QWenModel(QWenPreTrainedModel):
             else:
                 ntk_alpha = self.get_ntk_alpha(kv_seq_len)
                 ntk_alpha_list.append(ntk_alpha)
+        # ntk_alpha_list: [1.0]
         self.rotary_emb._ntk_alpha_cached_list = ntk_alpha_list
         rotary_pos_emb_list = [
             self.rotary_emb(kv_seq_len, ntk_alpha=ntk_alpha) for ntk_alpha in ntk_alpha_list
         ]
+        # rotary_pos_emb_list: [[torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]], dtype: torch.float32
 
         hidden_states = self.drop(hidden_states)
         output_shape = input_shape + (hidden_states.size(-1),)
+        # input_shape: [b, s]
+        # output_shape: [b, s, h]
 
+        # self.gradient_checkpointing: True
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(
@@ -860,14 +984,19 @@ class QWenModel(QWenPreTrainedModel):
                 )
                 use_cache = False
 
+        # presents: None
         presents = () if use_cache else None
+        # all_self_attentions: None
         all_self_attentions = () if output_attentions else None
+        # all_hidden_states: None
         all_hidden_states = () if output_hidden_states else None
         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
 
+            # output_hidden_states: False
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
+            # self.gradient_checkpointing: True
             if self.gradient_checkpointing and self.training:
 
                 def create_custom_forward(module):
@@ -880,12 +1009,19 @@ class QWenModel(QWenPreTrainedModel):
                 outputs = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     hidden_states,
+                    # hidden_states.shape: [b, s, h], dtype: torch.bfloat16
                     rotary_pos_emb_list,
+                    # rotary_pos_emb_list: [[torch.Size([1, s, 1, 128]), torch.Size([1, s, 1, 128])]], dtype: torch.float32
                     None,
+                    # layer_past: None
                     attention_mask,
+                    # attention_mask: torch.Size([b, 1, 1, s]), dtype: torch.bfloat16
                     head_mask[i],
+                    # head_mask: 一个包含40个None的列表
                     encoder_hidden_states,
+                    # encoder_hidden_states: None
                     encoder_attention_mask,
+                    # encoder_attention_mask: None
                 )
             else:
                 outputs = block(
@@ -901,9 +1037,11 @@ class QWenModel(QWenPreTrainedModel):
                 )
 
             hidden_states = outputs[0]
+            # use_cache: False
             if use_cache is True:
                 presents = presents + (outputs[1],)
 
+            # output_attentions: False
             if output_attentions:
                 all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
 
@@ -978,14 +1116,18 @@ class QWenLMHeadModel(QWenPreTrainedModel):
 
         self.transformer = QWenModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # self.lm_head与self.transformer中的Embedding层不共享权重
 
         if config.bf16:
+            # 若使用bf16, 则网络中所有参数的类型都为torch.bfloat16
             self.transformer.bfloat16()
             self.lm_head.bfloat16()
         if config.fp16:
+            # 若使用fp16, 则网络中所有参数的类型都为torch.float16
             self.transformer.half()
             self.lm_head.half()
         self.post_init()
+
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -996,8 +1138,11 @@ class QWenLMHeadModel(QWenPreTrainedModel):
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
     ):
+        token_type_ids = kwargs.get("token_type_ids", None)
         if past_key_values:
             input_ids = input_ids[:, -1].unsqueeze(-1)
+            if token_type_ids is not None:
+                token_type_ids = token_type_ids[:, -1].unsqueeze(-1)
 
         if input_ids.size(0) == 1:
             attention_mask = None
@@ -1013,7 +1158,9 @@ class QWenLMHeadModel(QWenPreTrainedModel):
             {
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
+                "position_ids": position_ids,
                 "attention_mask": attention_mask,
+                "token_type_ids": token_type_ids,
             }
         )
         return model_inputs
@@ -1036,9 +1183,25 @@ class QWenLMHeadModel(QWenPreTrainedModel):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
+        # input_ids: torch.Size([b, s]), dtype: torch.int64
+        # past_key_values: None
+        # attention_mask: torch.Size([b, s]), dtype: torch.bool
+        # token_type_ids: None
+        # position_ids: None
+        # head_mask: None
+        # inputs_embeds: None
+        # encoder_hidden_states: None
+        # encoder_attention_mask: None
+        # labels: torch.Size([b, s]), dtype: torch.int64
+        # use_cache: None
+        # output_attentions: None
+        # output_hidden_states: None
+        # return_dict: None
+
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
+        # return_dict: True
 
         transformer_outputs = self.transformer(
             input_ids,
@@ -1055,20 +1218,29 @@ class QWenLMHeadModel(QWenPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        # transformer_outputs: (hidden_states)
         hidden_states = transformer_outputs[0]
+        # hidden_states: torch.Size([b, s, h]), dtype: torch.bfloat16
 
         lm_logits = self.lm_head(hidden_states)
+        # self.lm_weight.weight.dtype: torch.bfloat16
+        # lm_logits: torch.Size([b, s, 152064]), dtype: torch.bfloat16
+        # 152064 为词表大小
 
         loss = None
         if labels is not None:
             labels = labels.to(lm_logits.device)
             shift_logits = lm_logits[..., :-1, :].contiguous()
+            # shift_logits: torch.Size([b, s-1, 152064])
             shift_labels = labels[..., 1:].contiguous()
+            # shift_labels: torch.Size([b, s-1])
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
             )
+            # loss is a float value
 
+        # return_dict: True
         if not return_dict:
             output = (lm_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
@@ -1181,6 +1353,9 @@ class QWenLMHeadModel(QWenPreTrainedModel):
         max_window_size = kwargs.get('max_window_size', None)
         if max_window_size is None:
             max_window_size = generation_config.max_window_size
+
+        # stop_words_ids: []
+        # max_window_size: 6144
         raw_text, context_tokens = make_context(
             tokenizer,
             query,
@@ -1189,14 +1364,18 @@ class QWenLMHeadModel(QWenPreTrainedModel):
             max_window_size=max_window_size,
             chat_format=generation_config.chat_format,
         )
+        # raw_text: 将系统消息, 对话历史, 及最新提问按一定形式组织起来的文本
+        # context_tokens: raw_text 对应的 tokens 列表
 
         stop_words_ids.extend(get_stop_words_ids(
             generation_config.chat_format, tokenizer
         ))
+        # stop_words_ids: [[tokenizer.im_end_id], [tokenizer.im_start_id]]
         if stop_words_ids is not None:
             stop_words_logits_processor = StopWordsLogitsProcessor(
                 stop_words_ids=stop_words_ids,
                 eos_token_id=generation_config.eos_token_id,
+                # generation_config.eos_token_id: 151643
             )
             if logits_processor is None:
                 logits_processor = LogitsProcessorList([stop_words_logits_processor])
