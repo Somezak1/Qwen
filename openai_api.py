@@ -172,6 +172,10 @@ def parse_messages(messages, functions):
             detail=f"Invalid request: Expecting at least one user message.",
         )
 
+    # system设定, 与messages无关
+    # ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓
+    # 如果未指定system_message, 或者指定的system_message为"You are a helpful assistant.", 那么system: "{REACT_INSTRUCTION}"
+    # 如果人为指定system_message, 那么system: "{system_message}\n\n{REACT_INSTRUCTION}"
     messages = copy.deepcopy(messages)
     default_system = "You are a helpful assistant."
     system = ""
@@ -207,7 +211,17 @@ def parse_messages(messages, functions):
             tools_name_text=tools_name_text,
         )
         system = system.lstrip("\n").rstrip()
+    # ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑
 
+    # ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓
+    # 对messages里的每条msg进行调整
+    # 首先所有msg.content作.lstrip("\n").rstrip()
+    # 如果msg.role是user, 则msg.content不变
+    # 如果msg.role是assistant, API调用时未传入functions, msg.function_call为None, 则msg.content不变
+    #                         API调用时传入functions, msg.function_call为None, 则依据上条msg是中文还是英文, msg.content=f"{对应语言的dummy_thought}{content}"
+    #                                                                                                                                                  若上条msg.role不为user, 则将msg.content加入到上条msg.content中去
+
+    #                                               msg.function_call有信息, 则msg.content=f"{content}\nAction: {func_name}\nAction Input: {func_args}"
     dummy_thought = {
         "en": "\nThought: I now know the final answer.\nFinal answer: ",
         "zh": "\nThought: 我会作答了。\nFinal answer: ",
@@ -261,6 +275,7 @@ def parse_messages(messages, functions):
             raise HTTPException(
                 status_code=400, detail=f"Invalid request: Incorrect role {role}."
             )
+    # ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑ ↑
 
     query = _TEXT_COMPLETION_CMD
     if messages[-1].role == "user":
@@ -352,15 +367,37 @@ def text_complete_last_message(history, stop_words_ids, gen_kwargs):
     output = tokenizer.decode(output, errors="ignore")
     assert output.startswith(prompt)
     output = output[len(prompt) :]
+    print(f"output: {repr(output)}")
     output = trim_stop_words(output, ["<|endoftext|>", im_end])
-    print(f"<completion>\n{prompt}\n<!-- *** -->\n{output}\n</completion>")
+    print(f"<completion>\n{repr(output)}\n</completion>")
     return output
 
 
+# class ChatCompletionResponse(BaseModel):
+#     model: str
+#     object: Literal["chat.completion", "chat.completion.chunk"]
+#     choices: List[
+#         Union[ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice]
+#     ]
+#     created: Optional[int] = Field(default_factory=lambda: int(time.time()))
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def create_chat_completion(request: ChatCompletionRequest):
     global model, tokenizer
 
+    # class ChatCompletionRequest(BaseModel):
+    #     model: str
+    #     messages: List[ChatMessage]
+    #     functions: Optional[List[Dict]] = None
+    #     temperature: Optional[float] = None
+    #     top_p: Optional[float] = None
+    #     max_length: Optional[int] = None
+    #     stream: Optional[bool] = False
+    #     stop: Optional[List[str]] = None
+
+    # class ChatMessage(BaseModel):
+    #     role: Literal["user", "assistant", "system", "function"]
+    #     content: Optional[str]
+    #     function_call: Optional[Dict] = None
     gen_kwargs = {}
     if request.temperature is not None:
         if request.temperature < 0.01:
@@ -389,9 +426,582 @@ async def create_chat_completion(request: ChatCompletionRequest):
         return EventSourceResponse(generate, media_type="text/event-stream")
 
     stop_words_ids = [tokenizer.encode(s) for s in stop_words] if stop_words else None
+    print(f"query: {query}")
+    print(f"history: {history}")
+    print(f"stop_words: {stop_words}")
+    print(f"stop_words_ids: {stop_words_ids}")
+    print(f"gen_kwargs: {gen_kwargs}")
     if query is _TEXT_COMPLETION_CMD:
         response = text_complete_last_message(history, stop_words_ids=stop_words_ids, gen_kwargs=gen_kwargs)
     else:
+        # ①
+        # 调用情况:
+        #     messages = [{"role": "user", "content": "你好"}]
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: "你好"
+        #     history: []
+        #     stop_words: []
+        #     stop_words_ids: None
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: "你好！有什么我能帮助你的吗？"
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u4f60\u597d\uff01\u6709\u4ec0\u4e48\u6211\u80fd\u5e2e\u52a9\u4f60\u7684\u5417\uff1f",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702282068
+        #     }
+        #     rnt.choices[0].message.content: "你好！有什么我能帮助你的吗？"
+
+
+        # ②
+        # 调用情况:
+        #     messages = [
+        #         {"role": "user", "content": "你好"},
+        #         {"role": "assistant", "content": "你好！很高兴为你提供帮助。"},
+        #         {"role": "user", "content": "给我讲一个年轻人奋斗创业最终取得成功的故事。故事只能有一句话。"},
+        #     ]
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: "给我讲一个年轻人奋斗创业最终取得成功的故事。故事只能有一句话。"
+        #     history: [
+        #         [
+        #             '你好',
+        #             '你好！很高兴为你提供帮助。'
+        #         ]
+        #     ]
+        #     stop_words: []
+        #     stop_words_ids: None
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: "他从零开始，经历了无数的困难和挫折，但始终坚持不懈地努力，最终创办了一家成功的公司。"
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u4ed6\u4ece\u96f6\u5f00\u59cb\uff0c\u7ecf\u5386\u4e86\u65e0\u6570\u7684\u56f0\u96be\u548c\u632b\u6298\uff0c\u4f46\u59cb\u7ec8\u575a\u6301\u4e0d\u61c8\u5730\u52aa\u529b\uff0c\u6700\u7ec8\u521b\u529e\u4e86\u4e00\u5bb6\u6210\u529f\u7684\u516c\u53f8\u3002",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702282071
+        #     }
+        #     rnt.choices[0].message.content: "他从零开始，经历了无数的困难和挫折，但始终坚持不懈地努力，最终创办了一家成功的公司。"
+
+
+        # ③
+        # 调用情况:
+        #     messages = [{"role": "user", "content": "你好"}]
+        #     functions = [
+        #         {
+        #             "name_for_human": "谷歌搜索",
+        #             "name_for_model": "google_search",
+        #             "description_for_model": "谷歌搜索是一个通用搜索引擎，可用于访问互联网、查询百科知识、了解时事新闻等。"
+        #                                      + " Format the arguments as a JSON object.",
+        #             "parameters": [
+        #                 {
+        #                     "name": "search_query",
+        #                     "description": "搜索关键词或短语",
+        #                     "required": True,
+        #                     "schema": {"type": "string"},
+        #                 }
+        #             ],
+        #         },
+        #         {
+        #             "name_for_human": "文生图",
+        #             "name_for_model": "image_gen",
+        #             "description_for_model": "文生图是一个AI绘画（图像生成）服务，输入文本描述，返回根据文本作画得到的图片的URL。"
+        #                                      + " Format the arguments as a JSON object.",
+        #             "parameters": [
+        #                 {
+        #                     "name": "prompt",
+        #                     "description": "英文关键词，描述了希望图像具有什么内容",
+        #                     "required": True,
+        #                     "schema": {"type": "string"},
+        #                 }
+        #             ],
+        #         },
+        #     ]
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: f'{REACT_INSTRUCTION}\n\nQuestion: 你好'
+        #     history: []
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: "Thought: 提供的工具帮助较小，我将直接回答。\nFinal Answer: 你好！有什么我可以帮你的吗？"
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u4f60\u597d\uff01\u6709\u4ec0\u4e48\u6211\u53ef\u4ee5\u5e2e\u4f60\u7684\u5417\uff1f",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702282228
+        #     }
+        #     rnt.choices[0].message.content: "你好！有什么我可以帮你的吗？"
+
+
+        # ④
+        # 调用情况:
+        #     messages = [
+        #         {"role": "user", "content": "你好"},
+        #         {"role": "assistant", "content": "你好！很高兴见到你。有什么我可以帮忙的吗？"},
+        #         {"role": "user", "content": "谁是周杰伦"},
+        #     ]
+        #     functions = 同③
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: "谁是周杰伦"
+        #     history: [
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 你好',
+        #             'Thought: 我会作答了。\nFinal answer: 你好！很高兴见到你。有什么我可以帮忙的吗？'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: "Thought: 我需要查找相关信息。\nAction: google_search\nAction Input: {"search_query": "周杰伦"}\nObservation:"
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "Thought: \u6211\u9700\u8981\u67e5\u627e\u76f8\u5173\u4fe1\u606f\u3002",
+        #             "function_call": {
+        #               "name": "google_search",
+        #               "arguments": "{\"search_query\": \"\u5468\u6770\u4f26\"}"
+        #             }
+        #           },
+        #           "finish_reason": "function_call"
+        #         }
+        #       ],
+        #       "created": 1702282754
+        #     }
+        #     rnt.choices[0].message.content: "Thought: 我需要查找相关信息。"
+
+
+        # ⑤
+        # 调用情况:
+        #     messages = [
+        #         {'role': 'user', 'content': '你好'},
+        #         {'role': 'assistant', 'content': '你好！很高兴见到你。有什么我可以帮忙的吗？'},
+        #         {'role': 'user', 'content': '谁是周杰伦'},
+        #         {'role': 'assistant', 'content': 'Thought: 我应该使用Google搜索查找相关信息。', 'function_call': {'name': 'google_search', 'arguments': '{"search_query": "周杰伦"}'}},
+        #         {'role': 'function', 'name': 'google_search', 'content': 'Jay Chou is a Taiwanese singer.'}
+        #     ]
+        #     functions = 同③
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 text_complete_last_message(...) 的参数:
+        #     query: <object object at 0x7f108959a390>
+        #     history: [
+        #         [
+        #             '你好',
+        #             'Thought: 我会作答了。\nFinal answer: 你好！很高兴见到你。有什么我可以帮忙的吗？'
+        #         ],
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 谁是周杰伦',
+        #             'Thought: 我应该使用Google搜索查找相关信息。\nAction: google_search\nAction Input: {"search_query": "周杰伦"}\nObservation: Jay Chou is a Taiwanese singer.\nThought:'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # text_complete_last_message(...) 函数中模型原始的生成结果为:
+        #     output: ' 我现在可以作答了。\nFinal Answer: 周杰伦是一位台湾歌手。<|im_end|><|endoftext|>'
+
+        # text_complete_last_message(...) 返回结果:
+        #     response: ' 我现在可以作答了。\nFinal Answer: 周杰伦是一位台湾歌手。'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u5468\u6770\u4f26\u662f\u4e00\u4f4d\u53f0\u6e7e\u6b4c\u624b\u3002",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702444283
+        #     }
+        #     rnt.choices[0].message.content: "周杰伦是一位台湾歌手。"
+
+
+        # ⑥
+        # 调用情况:
+        #     messages = [
+        #         {'role': 'user', 'content': '你好'},
+        #         {'role': 'assistant', 'content': '你好！很高兴见到你。有什么我可以帮忙的吗？'},
+        #         {'role': 'user', 'content': '谁是周杰伦'},
+        #         {'role': 'assistant', 'content': 'Thought: 我应该使用Google搜索查找相关信息。', 'function_call': {'name': 'google_search', 'arguments': '{"search_query": "周杰伦"}'}},
+        #         {'role': 'function', 'name': 'google_search', 'content': 'Jay Chou is a Taiwanese singer.'},
+        #         {'role': 'assistant', 'content': '周杰伦（Jay Chou）是一位来自台湾的歌手。'},
+        #         {'role': 'user', 'content': '他老婆是谁'}
+        #     ]
+        #     functions = 同③
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: "他老婆是谁"
+        #     history: [
+        #         [
+        #             '你好',
+        #             'Thought: 我会作答了。\nFinal answer: 你好！很高兴见到你。有什么我可以帮忙的吗？'
+        #         ],
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 谁是周杰伦',
+        #             'Thought: 我应该使用Google搜索查找相关信息。\nAction: google_search\nAction Input: {"search_query": "周杰伦"}\nObservation: Jay Chou is a Taiwanese singer.\nThought: 我会作答了。\nFinal answer: 周杰伦（Jay Chou）是一位来自台湾的歌手。'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: 'Thought: 我应该使用Google搜索查找相关信息。\nAction: google_search\nAction Input: {"search_query": "周杰伦老婆"}\nObservation:'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "Thought: \u6211\u5e94\u8be5\u4f7f\u7528Google\u641c\u7d22\u67e5\u627e\u76f8\u5173\u4fe1\u606f\u3002",
+        #             "function_call": {
+        #               "name": "google_search",
+        #               "arguments": "{\"search_query\": \"\u5468\u6770\u4f26\u8001\u5a46\"}"
+        #             }
+        #           },
+        #           "finish_reason": "function_call"
+        #         }
+        #       ],
+        #       "created": 1702365374
+        #     }
+        #     rnt.choices[0].message.content: "Thought: 我应该使用Google搜索查找相关信息。"
+
+
+        # ⑦
+        # 调用情况:
+        #     messages = [
+        #         {'role': 'user', 'content': '你好'},
+        #         {'role': 'assistant', 'content': '你好！很高兴见到你。有什么我可以帮忙的吗？'},
+        #         {'role': 'user', 'content': '谁是周杰伦'},
+        #         {'role': 'assistant', 'content': 'Thought: 我应该使用Google搜索查找相关信息。', 'function_call': {'name': 'google_search', 'arguments': '{"search_query": "周杰伦"}'}},
+        #         {'role': 'function', 'name': 'google_search', 'content': 'Jay Chou is a Taiwanese singer.'},
+        #         {'role': 'assistant', 'content': '周杰伦（Jay Chou）是一位来自台湾的歌手。'},
+        #         {'role': 'user', 'content': '他老婆是谁'},
+        #         {'role': 'assistant', 'content': 'Thought: 我应该使用Google搜索查找相关信息。', 'function_call': {'name': 'google_search', 'arguments': '{"search_query": "周杰伦 老婆"}'}},
+        #         {'role': 'function', 'name': 'google_search', 'content': 'Hannah Quinlivan'}
+        #     ]
+        #     functions = 同③
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 text_complete_last_message(...) 的参数:
+        #     query: <object object at 0x7f108959a390>
+        #     history: [
+        #         [
+        #             '你好',
+        #             'Thought: 我会作答了。\nFinal answer: 你好！很高兴见到你。有什么我可以帮忙的吗？'
+        #         ],
+        #         [
+        #             '谁是周杰伦',
+        #             'Thought: 我应该使用Google搜索查找相关信息。\nAction: google_search\nAction Input: {"search_query": "周杰伦"}\nObservation: Jay Chou is a Taiwanese singer.\nThought: 我会作答了。\nFinal answer: 周杰伦（Jay Chou）是一位来自台湾的歌手。'
+        #         ],
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 他老婆是谁',
+        #             'Thought: 我应该使用Google搜索查找相关信息。\nAction: google_search\nAction Input: {"search_query": "周杰伦 老婆"}\nObservation: Hannah Quinlivan\nThought:'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # text_complete_last_message(...) 函数中模型原始的生成结果为:
+        #     output: ' 我会作答了。\nFinal Answer: 周杰伦的妻子是Hannah Quinlivan。<|im_end|><|endoftext|>'
+
+        # text_complete_last_message(...) 返回结果:
+        #     response: ' 我会作答了。\nFinal Answer: 周杰伦的妻子是Hannah Quinlivan。'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u5468\u6770\u4f26\u7684\u59bb\u5b50\u662fHannah Quinlivan\u3002",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702366124
+        #     }
+        #     rnt.choices[0].message.content: "周杰伦的妻子是Hannah Quinlivan。"
+
+
+        # ⑧
+        # 调用情况:
+        #     messages = [
+        #         {"role": "user", "content": "你好"},
+        #         {"role": "assistant", "content": "你好！很高兴见到你。有什么我可以帮忙的吗？"},
+        #         {'role': 'user', 'content': '给我画个可爱的小猫吧，最好是黑猫'}
+        #     ]
+        #     functions = 同③
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: "给我画个可爱的小猫吧，最好是黑猫"
+        #     history: [
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 你好',
+        #             'Thought: 我会作答了。\nFinal answer: 你好！很高兴见到你。有什么我可以帮忙的吗？'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: 'Thought: 我需要使用文生图API来生成一张小猫的图片。\nAction: image_gen\nAction Input: {"prompt": "a cute black cat"}\nObservation:'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "Thought: \u6211\u9700\u8981\u4f7f\u7528\u6587\u751f\u56feAPI\u6765\u751f\u6210\u4e00\u5f20\u5c0f\u732b\u7684\u56fe\u7247\u3002",
+        #             "function_call": {
+        #               "name": "image_gen",
+        #               "arguments": "{\"prompt\": \"a cute black cat\"}"
+        #             }
+        #           },
+        #           "finish_reason": "function_call"
+        #         }
+        #       ],
+        #       "created": 1702366727
+        #     }
+        #     rnt.choices[0].message.content: "Thought: 我需要使用文生图API来生成一张小猫的图片。"
+
+
+        # ⑨
+        # 调用情况:
+        #     messages = [
+        #         {"role": "user", "content": "你好"},
+        #         {"role": "assistant", "content": "你好！很高兴见到你。有什么我可以帮忙的吗？"},
+        #         {'role': 'user', 'content': '给我画个可爱的小猫吧，最好是黑猫'},
+        #         {'role': 'assistant', 'content': 'Thought: 我应该使用文生图API来生成一张可爱的小猫图片。', 'function_call': {'name': 'image_gen', 'arguments': '{"prompt": "cute black cat"}'}},
+        #         {'role': 'function', 'name': 'image_gen', 'content': '{"image_url": "https://image.pollinations.ai/prompt/cute%20black%20cat"}'}
+        #     ]
+        #     functions = 同③
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 text_complete_last_message(...) 的参数:
+        #     query: <object object at 0x7f6ef4946390>
+        #     history: [
+        #         [
+        #             '你好',
+        #             'Thought: 我会作答了。\nFinal answer: 你好！很高兴见到你。有什么我可以帮忙的吗？'
+        #         ],
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 给我画个可爱的小猫吧，最好是黑猫',
+        #             'Thought: 我应该使用文生图API来生成一张可爱的小猫图片。\nAction: image_gen\nAction Input: {"prompt": "cute black cat"}\nObservation: {"image_url": "https://image.pollinations.ai/prompt/cute%20black%20cat"}\nThought:'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # text_complete_last_message(...) 函数中模型原始的生成结果为:
+        #     output: ' 我现在可以作答了。\nFinal Answer: 好的，我已经为您生成了一张可爱的小黑猫图片。![](https://image.pollinations.ai/prompt/cute%20black%20cat)<|im_end|><|endoftext|>'
+
+        # text_complete_last_message(...) 返回结果:
+        #     response: ' 我现在可以作答了。\nFinal Answer: 好的，我已经为您生成了一张可爱的小黑猫图片。![](https://image.pollinations.ai/prompt/cute%20black%20cat)'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u597d\u7684\uff0c\u6211\u5df2\u7ecf\u4e3a\u60a8\u751f\u6210\u4e86\u4e00\u5f20\u53ef\u7231\u7684\u5c0f\u9ed1\u732b\u56fe\u7247\u3002![](https://image.pollinations.ai/prompt/cute%20black%20cat)",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702367178
+        #     }
+        #     rnt.choices[0].message.content: "好的，我已经为您生成了一张可爱的小黑猫图片。![](https://image.pollinations.ai/prompt/cute%20black%20cat)"
+
+
+        # ⑩
+        # 调用情况:
+        #     messages = [{'role': 'user', 'content': '波士顿天气如何？'}]
+        #     functions = [
+        #         {
+        #             "name": "get_current_weather",
+        #             "description": "Get the current weather in a given location.",
+        #             "parameters": {
+        #                 "type": "object",
+        #                 "properties": {
+        #                     "location": {
+        #                         "type": "string",
+        #                         "description": "The city and state, e.g. San Francisco, CA",
+        #                     },
+        #                     "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+        #                 },
+        #                 "required": ["location"],
+        #             },
+        #         }
+        #     ]
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 model.chat(...) 的参数:
+        #     query: f'{REACT_INSTRUCTION}\n\nQuestion: 波士顿天气如何？'
+        #     history: []
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # model.chat(...) 返回结果:
+        #     response: 'Thought: 我需要获取波士顿的当前天气。\nAction: get_current_weather\nAction Input: {"location": "Boston, MA"}\nObservation:'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "Thought: \u6211\u9700\u8981\u83b7\u53d6\u6ce2\u58eb\u987f\u7684\u5f53\u524d\u5929\u6c14\u3002",
+        #             "function_call": {
+        #               "name": "get_current_weather",
+        #               "arguments": "{\"location\": \"Boston, MA\"}"
+        #             }
+        #           },
+        #           "finish_reason": "function_call"
+        #         }
+        #       ],
+        #       "created": 1702452887
+        #     }
+        #     rnt.choices[0].message.content: 'Thought: 我需要获取波士顿的当前天气。'
+
+
+        # ①①
+        # 调用情况:
+        #     messages = [
+        #         {'role': 'user', 'content': '波士顿天气如何？'},
+        #         {'role': 'assistant', 'content': None, 'function_call': {'name': 'get_current_weather', 'arguments': '{"location": "Boston, MA"}'}},
+        #         {'role': 'function', 'name': 'get_current_weather', 'content': '{"temperature": "22", "unit": "celsius", "description": "Sunny"}'}
+        #     ]
+        #     functions = 同⑩
+        #     rnt = openai.ChatCompletion.create(model="Qwen", messages=messages, functions=functions, temperature=0)
+
+        # 传入 text_complete_last_message(...) 的参数:
+        #     query: <object object at 0x7f6ef4946390>
+        #     history: [
+        #         [
+        #             f'{REACT_INSTRUCTION}\n\nQuestion: 波士顿天气如何？',
+        #             'Thought: 我可以使用 get_current_weather API。\nAction: get_current_weather\nAction Input: {"location": "Boston, MA"}\nObservation: {"temperature": "22", "unit": "celsius", "description": "Sunny"}\nThought:'
+        #         ]
+        #     ]
+        #     stop_words: ["Observation:"]
+        #     stop_words_ids: [[37763, 367, 25]]
+        #     gen_kwargs: {'top_k': 1}
+
+        # text_complete_last_message(...) 函数中模型原始的生成结果为:
+        #     output: ' 我现在知道波士顿的天气了。\nFinal Answer: 波士顿现在的天气是晴朗，温度为22摄氏度。<|im_end|><|endoftext|>'
+
+        # text_complete_last_message(...) 返回结果:
+        #     response: ' 我现在知道波士顿的天气了。\nFinal Answer: 波士顿现在的天气是晴朗，温度为22摄氏度。'
+
+        # openai.ChatCompletion.create(...) 返回结果:
+        #     rnt: {
+        #       "model": "Qwen",
+        #       "object": "chat.completion",
+        #       "choices": [
+        #         {
+        #           "index": 0,
+        #           "message": {
+        #             "role": "assistant",
+        #             "content": "\u6ce2\u58eb\u987f\u73b0\u5728\u7684\u5929\u6c14\u662f\u6674\u6717\uff0c\u6e29\u5ea6\u4e3a22\u6444\u6c0f\u5ea6\u3002",
+        #             "function_call": null
+        #           },
+        #           "finish_reason": "stop"
+        #         }
+        #       ],
+        #       "created": 1702453766
+        #     }
+        #     rnt.choices[0].message.content: '波士顿现在的天气是晴朗，温度为22摄氏度。'
+
         response, _ = model.chat(
             tokenizer,
             query,
@@ -399,18 +1009,40 @@ async def create_chat_completion(request: ChatCompletionRequest):
             stop_words_ids=stop_words_ids,
             **gen_kwargs
         )
-        print(f"<chat>\n{history}\n{query}\n<!-- *** -->\n{response}\n</chat>")
+    print(f"<chat>\n{repr(response)}\n</chat>")
     _gc()
 
+    # 将stop_word及其后面的字符串舍弃
     response = trim_stop_words(response, stop_words)
     if request.functions:
+        # 如果调用openai.ChatCompletion.create时传入functions, 则视情况对response进行处理
+        # 如果response中含有"\nAction:"和"\nAction Input:"字样, 则提取"\nAction:"与"\nAction Input:", "\nAction Input:"与"\nObservation:"(若response原本不含则在末尾添加一个)之间的func_name和func_args, 连同"\nAction:"之前的文本一并返回至json文件
+        # 如果response中不含"\nAction:"和"\nAction Input:"字样, 但含有"\nFinal Answer: "字样, 则提取"\nFinal Answer: "后面的字符串返回
         choice_data = parse_response(response)
     else:
+        # 如果调用openai.ChatCompletion.create时没传入functions, 则将response直接传入
         choice_data = ChatCompletionResponseChoice(
             index=0,
             message=ChatMessage(role="assistant", content=response),
             finish_reason="stop",
         )
+        # class ChatCompletionResponseChoice(BaseModel):
+        #     index: int
+        #     message: ChatMessage
+        #     finish_reason: Literal["stop", "length", "function_call"]
+
+        # class ChatMessage(BaseModel):
+        #     role: Literal["user", "assistant", "system", "function"]
+        #     content: Optional[str]
+        #     function_call: Optional[Dict] = None
+
+        # class ChatCompletionResponse(BaseModel):
+        #     model: str
+        #     object: Literal["chat.completion", "chat.completion.chunk"]
+        #     choices: List[
+        #         Union[ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice]
+        #     ]
+        #     created: Optional[int] = Field(default_factory=lambda: int(time.time()))
     return ChatCompletionResponse(
         model=request.model, choices=[choice_data], object="chat.completion"
     )
