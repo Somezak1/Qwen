@@ -447,7 +447,7 @@ response, history = model.chat(tokenizer, "Hi", history=None)
 ### KVキャッシュ量子化
 
 > 注意: Hugging Faceの内部メカニズムにより、この機能のサポートファイル 
-> (すなわち、`cache_autogptq_cuda_256.cpp`と`cache_autogptq_cuda_kernel_245.cu`)が欠落している可能性があります。以下を手動でダウンロードしてください。
+> (すなわち、`cache_autogptq_cuda_256.cpp`と`cache_autogptq_cuda_kernel_256.cu`)が欠落している可能性があります。以下を手動でダウンロードしてください。
 > Hugging Face Hubから手動でダウンロードし、他のモジュールファイルと同じフォルダに入れてください。
 
 アテンション KV キャッシュを量子化して圧縮して保存すると、サンプルのスループットが向上する。この機能を有効にするには、`config.json` に `use_cache_quantization` と `use_cache_kernel` という引数を指定する。
@@ -608,7 +608,7 @@ BF16、Int8、および Int4 のモデルを使用して 2048 を生成する際
 ### 使用方法
 現在、公式のトレーニングスクリプト `finetune.py` を提供しています。さらに、finetune.pyのシェルスクリプトを提供し、finetune.pyを実行することで、finetune.pyを起動することができる。さらに、安心してファインチューニングを開始するためのシェルスクリプトも提供しています。このスクリプトは、[DeepSpeed](https://github.com/microsoft/DeepSpeed) (注意：これはpydanticの最新バージョンとコンフリクトする可能性があるので、`pydantic<2.0`にする必要があります) および [FSDP](https://engineering.fb.com/2021/07/15/open-source/fsdp/) を使用したトレーニングをサポートします。弊社が提供するシェル・スクリプトは DeepSpeed と Peft を使用するため、事前に DeepSpeed と Peft をインストールすることをお勧めします：
 ```bash
-pip install -r requirements_finetune.txt
+pip install "peft<0.8.0" deepspeed
 ```
 
 学習データを準備するには、すべてのサンプルをリストにまとめ、jsonファイルに保存する必要があります。各サンプルはidと会話リストで構成される辞書です。以下は1つのサンプルを含む単純なリストの例です：
@@ -642,7 +642,7 @@ pip install -r requirements_finetune.txt
 
 ```bash
 # 分散トレーニング。GPUメモリが不足するとトレーニングが破綻するため、シングルGPUのトレーニングスクリプトは提供していません。
-sh finetune/finetune_ds.sh
+bash finetune/finetune_ds.sh
 ```
 
 シェルスクリプトでは、正しいモデル名またはパス、データパス、出力ディレクトリを指定することを忘れないでください。このスクリプトでは DeepSpeed ZeRO 3 を使用しています。変更したい場合は、引数 `--deepspeed` を削除するか、要件に基づいて DeepSpeed 設定 json ファイルを変更してください。さらに、このスクリプトは混合精度のトレーニングに対応しており、`--bf16 True` または `--fp16 True` を使用することができます。fp16を使用する場合は、混合精度のトレーニングのため、DeepSpeedを使用することを忘れないこと。経験的に、あなたのマシンがbf16をサポートしている場合、私たちのプリトレーニングとアライメントを整合させるためにbf16を使用することをお勧めします。
@@ -651,9 +651,9 @@ sh finetune/finetune_ds.sh
 
 ```bash
 # シングルGPUトレーニング
-sh finetune/finetune_lora_single_gpu.sh
+bash finetune/finetune_lora_single_gpu.sh
 # 分散トレーニング
-sh finetune/finetune_lora_ds.sh
+bash finetune/finetune_lora_ds.sh
 ```
 
 LoRA ([論文](https://arxiv.org/abs/2106.09685)) は、フルパラメーターによるファインチューニングと比較して、adapterのパラメーターを更新するだけで、元の大きな言語モデル層は凍結されたままである。そのため、メモリコストが大幅に削減でき、計算コストも削減できる。
@@ -668,9 +668,9 @@ Q-LoRAを実行するには、以下のスクリプトを直接実行してく�
 
 ```bash
 # シングルGPUトレーニング
-sh finetune/finetune_qlora_single_gpu.sh
+bash finetune/finetune_qlora_single_gpu.sh
 # 分散トレーニング
-sh finetune/finetune_qlora_ds.sh
+bash finetune/finetune_qlora_ds.sh
 ```
 
 Q-LoRAについては、弊社が提供する量子化モデル、例えばQwen-7B-Chat-Int4をロードすることをお勧めします。BF16モデルは使用し**ない**でください！フルパラメータ・ファインチューニングやLoRAとは異なり、Q-LoRAではfp16のみがサポートされる。シングルGPUのトレーニングでは、トーチアンプによるエラーが観測されたため、混合精度のトレーニングにはDeepSpeedを使用する必要がある。また、Q-LoRAの場合、LoRAの特殊トークンの問題が残っています。しかし、Q-LoRAではチャットモデルとしてInt4モデルのみを提供しており、言語モデルはChatML形式の特殊トークンを学習しているため、レイヤーの心配はありません。なお、Int4モデルのレイヤーは学習できないはずなので、学習で特殊なトークンを導入すると、Q-LoRAが動作しなくなる可能性があります。
@@ -782,17 +782,12 @@ Qwen-72B については、2 つの方法で実験します。1) 4 つの A100-S
 ### vLLM 
 デプロイメントと高速推論のためには、vLLMを使用することをお勧めします。
 
-cuda 12.1 および pytorch 2.1 を使用している場合は、次のコマンドを直接使用して vLLM をインストールできます。
+**CUDA 12.1** および **PyTorch 2.1** を使用している場合は、次のコマンドを直接使用して vLLM をインストールできます。
 ```bash
-# pip install vllm  # この行はより速いですが、量子化モデルをサポートしていません。
-
-# 以下のはINT4の量子化をサポートします（INT8はまもなくサポートされます）。 インストールは遅くなります（〜10分）。
-git clone https://github.com/QwenLM/vllm-gptq
-cd vllm-gptq
-pip install -e .
+pip install vllm
 ```
 
-それ以外の場合は、公式 vLLM [インストール手順](https://docs.vllm.ai/en/latest/getting_started/installation.html) 、または[GPTQの量子化 vLLM レポ](https://github.com/QwenLM/vllm-gptq)を参照してください。
+それ以外の場合は、公式 vLLM [インストール手順](https://docs.vllm.ai/en/latest/getting_started/installation.html) を参照してください。
 
 #### vLLM + Transformer Wrapper
 
@@ -888,7 +883,7 @@ python cli_demo.py
 OpenAI API をベースにローカルAPIをデプロイする方法を提供する（@hanpenggit に感謝）。始める前に、必要なパッケージをインストールしてください:
 
 ```bash
-pip install fastapi uvicorn openai "pydantic>=2.3.0" sse_starlette
+pip install fastapi uvicorn "openai<1.0" pydantic sse_starlette
 ```
 
 それから、API をデプロイするコマンドを実行します:
@@ -948,6 +943,7 @@ print(response.choices[0].message.content)
 1. 使用するイメージに応じて、正しいバージョンのNvidiaドライバをインストールしてください：
   - `qwenllm/qwen:cu117` (**recommend**): `>= 515.48.07`
   - `qwenllm/qwen:cu114` (w/o flash-attention): `>= 470.82.01`
+  - `qwenllm/qwen:cu121`: `>= 530.30.02`
   - `qwenllm/qwen:latest`: same as `qwenllm/qwen:cu117`
 
 2. [Docker](https://docs.docker.com/engine/install/) と [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) をインストールして設定します：

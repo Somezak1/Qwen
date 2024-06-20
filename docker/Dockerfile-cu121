@@ -1,4 +1,4 @@
-ARG CUDA_VERSION=11.4.3
+ARG CUDA_VERSION=12.1.0
 ARG from=nvidia/cuda:${CUDA_VERSION}-cudnn8-devel-ubuntu20.04
 
 FROM ${from} as base
@@ -40,18 +40,24 @@ ARG BUNDLE_REQUIREMENTS=true
 RUN <<EOF
 if [ "$BUNDLE_REQUIREMENTS" = "true" ]; then 
     cd /data/shared/Qwen
-    pip3 install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2
+    pip3 install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
     pip3 install -r requirements.txt
     pip3 install -r requirements_web_demo.txt
+
+    pip3 install transformers==4.36.0
 fi
 EOF
 
 FROM bundle_req as bundle_flash_attention
 ARG BUNDLE_FLASH_ATTENTION=true
 
-RUN <<EOF
+RUN <<EOF 
 if [ "$BUNDLE_FLASH_ATTENTION" = "true" ]; then
-    echo "CUDA 11.4 does not support flash-attention, please try other images."
+    cd /data/shared/Qwen 
+    test -d flash-attention || git clone -b v2.3.3 https://github.com/Dao-AILab/flash-attention
+    cd /data/shared/Qwen/flash-attention &&
+        pip3 install . &&
+        pip3 install csrc/layer_norm
 fi
 EOF
 
@@ -63,13 +69,13 @@ if [ "$BUNDLE_FINETUNE" = "true" ]; then
     cd /data/shared/Qwen
 
     # Full-finetune / LoRA.
-    pip3 install deepspeed "peft==0.5.0"
+    pip3 install "deepspeed==0.12.6" "peft==0.7.1"
 
     # Q-LoRA.
     apt update -y && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
         libopenmpi-dev openmpi-bin \
         && rm -rf /var/lib/apt/lists/*
-    pip3 install "optimum==1.12.0" "auto-gptq==0.4.2" mpi4py
+    pip3 install "optimum==1.14.0" "auto-gptq==0.5.0" mpi4py
 fi
 EOF
 
@@ -84,7 +90,18 @@ if [ "$BUNDLE_OPENAI_API" = "true" ]; then
 fi
 EOF
 
-FROM bundle_openai_api as final
+FROM bundle_openai_api as bundle_vllm
+ARG BUNDLE_VLLM=true
+
+RUN <<EOF
+if [ "$BUNDLE_VLLM" = "true" ]; then
+    cd /data/shared/Qwen
+
+    pip3 install vllm==0.2.7 "fschat[model_worker,webui]==0.2.33"
+fi
+EOF
+
+FROM bundle_vllm as final
 ARG from
 
 COPY ../requirements.txt ./

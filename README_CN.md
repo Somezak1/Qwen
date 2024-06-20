@@ -15,6 +15,14 @@
 </p>
 <br><br>
 
+> [!Warning]
+> <div align="center">
+> <b>
+> 🚨 建议您关注<a href="https://github.com/QwenLM/Qwen1.5">Qwen1.5</a>。当前我们Qwen1.5的模型代码和用法相比此前版本有较大不同，因此我们使用新的repo进行维护。未来我们将不再维护此repo。
+> </b>
+> </div>
+<br>
+
 |     |                                                              Qwen-Chat                                                               |                                                                Qwen-Chat (Int4)                                                                |                        Qwen-Chat (Int8)                         |                                                            Qwen                                                            |
 |-----|:------------------------------------------------------------------------------------------------------------------------------------:|:----------------------------------------------------------------------------------------------------------------------------------------------:|:---------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------:|
 | 1.8B  |  <a href="https://modelscope.cn/models/qwen/Qwen-1_8B-Chat/summary">🤖</a>  <a href="https://huggingface.co/Qwen/Qwen-1_8B-Chat">🤗</a>  |  <a href="https://modelscope.cn/models/qwen/Qwen-1_8B-Chat-Int4/summary">🤖</a>  <a href="https://huggingface.co/Qwen/Qwen-1_8B-Chat-Int4">🤗</a>  | <a href="https://modelscope.cn/models/qwen/Qwen-1_8B-Chat-Int8/summary">🤖</a>  <a href="https://huggingface.co/Qwen/Qwen-1_8B-Chat-Int8">🤗</a>  |  <a href="https://modelscope.cn/models/qwen/Qwen-1_8B/summary">🤖</a>  <a href="https://huggingface.co/Qwen/Qwen-1_8B">🤗</a>  |
@@ -339,6 +347,10 @@ model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen-7B-Chat", device_map="cp
 
 尽管这个方法很简单，但它的效率相对较低。我们建议使用vLLM和FastChat并请阅读部署章节。
 
+### x86 平台
+在 酷睿™/至强® 可扩展处理器或 Arc™ GPU 上部署量化模型时，建议使用 [OpenVINO™ Toolkit](https://docs.openvino.ai/2023.3/gen_ai_guide.html) 以充分利用硬件，实现更好的推理性能。您可以安装并运行此[example notebook](https://github.com/openvinotoolkit/openvino_notebooks/tree/main/notebooks/254-llm-chatbot)。相关问题，您可在 [OpenVINO repo](https://github.com/openvinotoolkit/openvino_notebooks/issues)中提交。
+
+
 ### 阿里云灵积（DashScope）API服务
 最简单的使用Qwen模型API服务的方法就是通过DashScope（阿里云灵积API模型服务）。我们提供了简单介绍说明使用方法。同时，我们还提供了自己部署OpenAI格式的API的方法。
 
@@ -448,7 +460,7 @@ response, history = model.chat(tokenizer, "Hi", history=None)
 
 ### KV cache量化
 
-> 注意：由于Hugging Face的内部实现，本功能的支持文件`cache_autogptq_cuda_356.cpp`与`cache_autogptq_cuda_kernel_245.cu`可能没被下载。如需开启使用，请手动从相关位置下载，并放置到相应文件中。
+> 注意：由于Hugging Face的内部实现，本功能的支持文件`cache_autogptq_cuda_256.cpp`与`cache_autogptq_cuda_kernel_256.cu`可能没被下载。如需开启使用，请手动从相关位置下载，并放置到相应文件中。
 
 在模型推理时，我们可以将中间结果key以及value的值量化后压缩存储，这样便可以在相同的卡上存储更多的key以及value，增加样本吞吐。
 
@@ -603,7 +615,7 @@ model = AutoModelForCausalLM.from_pretrained(
 ### 使用方法
 我们提供了`finetune.py`这个脚本供用户实现在自己的数据上进行微调的功能，以接入下游任务。此外，我们还提供了shell脚本减少用户的工作量。这个脚本支持 [DeepSpeed](https://github.com/microsoft/DeepSpeed) 和 [FSDP](https://engineering.fb.com/2021/07/15/open-source/fsdp/) 。我们提供的shell脚本使用了DeepSpeed，因此建议您确保已经安装DeepSpeed和Peft（注意：DeepSpeed可能不兼容最新的pydantic版本，请确保`pydantic<2.0`）。你可以使用如下命令安装：
 ```bash
-pip install peft deepspeed
+pip install "peft<0.8.0" deepspeed
 ```
 
 首先，你需要准备你的训练数据。你需要将所有样本放到一个列表中并存入json文件中。每个样本对应一个字典，包含id和conversation，其中后者为一个列表。示例如下所示：
@@ -636,7 +648,7 @@ pip install peft deepspeed
 
 ```bash
 # 分布式训练。由于显存限制将导致单卡训练失败，我们不提供单卡训练脚本。
-sh finetune/finetune_ds.sh
+bash finetune/finetune_ds.sh
 ```
 
 尤其注意，你需要在脚本中指定正确的模型名称或路径、数据路径、以及模型输出的文件夹路径。在这个脚本中我们使用了DeepSpeed ZeRO 3。如果你想修改这个配置，可以删除掉`--deepspeed`这个输入或者自行根据需求修改DeepSpeed配置json文件。此外，我们支持混合精度训练，因此你可以设置`--bf16 True`或者`--fp16 True`。在使用fp16时，请使用DeepSpeed支持混合精度训练。经验上，如果你的机器支持bf16，我们建议使用bf16，这样可以和我们的预训练和对齐训练保持一致，这也是为什么我们把默认配置设为它的原因。
@@ -645,9 +657,9 @@ sh finetune/finetune_ds.sh
 
 ```bash
 # 单卡训练
-sh finetune/finetune_lora_single_gpu.sh
+bash finetune/finetune_lora_single_gpu.sh
 # 分布式训练
-sh finetune/finetune_lora_ds.sh
+bash finetune/finetune_lora_ds.sh
 ```
 
 与全参数微调不同，LoRA ([论文](https://arxiv.org/abs/2106.09685)) 只更新adapter层的参数而无需更新原有语言模型的参数。这种方法允许用户用更低的显存开销来训练模型，也意味着更小的计算开销。
@@ -662,9 +674,9 @@ sh finetune/finetune_lora_ds.sh
 
 ```bash
 # 单卡训练
-sh finetune/finetune_qlora_single_gpu.sh
+bash finetune/finetune_qlora_single_gpu.sh
 # 分布式训练
-sh finetune/finetune_qlora_ds.sh
+bash finetune/finetune_qlora_ds.sh
 ```
 
 我们建议你使用我们提供的Int4量化模型进行训练，即Qwen-7B-Chat-Int4。请**不要使用**非量化模型！与全参数微调以及LoRA不同，Q-LoRA仅支持fp16。注意，由于我们发现torch amp支持的fp16混合精度训练存在问题，因此当前的单卡训练Q-LoRA必须使用DeepSpeed。此外，上述LoRA关于特殊token的问题在Q-LoRA依然存在。并且，Int4模型的参数无法被设为可训练的参数。所幸的是，我们只提供了Chat模型的Int4模型，因此你不用担心这个问题。但是，如果你执意要在Q-LoRA中引入新的特殊token，很抱歉，我们无法保证你能成功训练。
@@ -682,6 +694,9 @@ model = AutoPeftModelForCausalLM.from_pretrained(
     trust_remote_code=True
 ).eval()
 ```
+
+> 注意: 如果`peft>=0.8.0`，加载模型同时会尝试加载tokenizer，但peft内部未相应设置`trust_remote_code=True`，导致`ValueError: Tokenizer class QWenTokenizer does not exist or is not currently imported.`要避过这一问题，你可以降级`peft<0.8.0`或将tokenizer相关文件移到其它文件夹。
+
 
 如果你觉得这样一步到位的方式让你很不安心或者影响你接入下游应用，你可以选择先合并并存储模型（LoRA支持合并，Q-LoRA不支持），再用常规方式读取你的新模型，示例如下：
 
@@ -713,8 +728,66 @@ tokenizer.save_pretrained(new_model_directory)
 
 注意：分布式训练需要根据你的需求和机器指定正确的分布式训练超参数。此外，你需要根据你的数据、显存情况和训练速度预期，使用`--model_max_length`设定你的数据长度。
 
+### 量化微调后模型
+
+这一小节用于量化全参/LoRA微调后的模型。（注意：你不需要量化Q-LoRA模型因为它本身就是量化过的。）
+如果你需要量化LoRA微调后的模型，请先根据上方说明去合并你的模型权重。
+
+我们推荐使用[auto_gptq](https://github.com/PanQiWei/AutoGPTQ)去量化你的模型。
+
+```bash
+pip install auto-gptq optimum
+```
+
+注意: 当前AutoGPTQ有个bug，可以在该[issue](https://github.com/PanQiWei/AutoGPTQ/issues/370)查看。这里有个[修改PR](https://github.com/PanQiWei/AutoGPTQ/pull/495)，你可以使用该分支从代码进行安装。
+
+首先，准备校准集。你可以重用微调你的数据，或者按照微调相同的方式准备其他数据。
+
+第二步，运行以下命令：
+
+```bash
+python run_gptq.py \
+    --model_name_or_path $YOUR_LORA_MODEL_PATH \
+    --data_path $DATA \
+    --out_path $OUTPUT_PATH \
+    --bits 4 # 4 for int4; 8 for int8
+```
+
+这一步需要使用GPU，根据你的校准集大小和模型大小，可能会消耗数个小时。
+
+接下来, 将原模型中所有 `*.py`, `*.cu`, `*.cpp` 文件和 `generation_config.json` 文件复制到输出模型目录下。同时，使用官方对应版本的量化模型的 `config.json` 文件覆盖输出模型目录下的文件
+(例如, 如果你微调了 `Qwen-7B-Chat`和`--bits 4`, 那么你可以从 [Qwen-7B-Chat-Int4](https://huggingface.co/Qwen/Qwen-7B-Chat-Int4/blob/main/config.json) 仓库中找到对应的`config.json` )。
+并且，你需要将 ``gptq.safetensors`` 重命名为 ``model.safetensors``。
+
+最后，像官方量化模型一样测试你的模型。例如：
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.generation import GenerationConfig
+
+tokenizer = AutoTokenizer.from_pretrained("/path/to/your/model", trust_remote_code=True)
+
+model = AutoModelForCausalLM.from_pretrained(
+    "/path/to/your/model",
+    device_map="auto",
+    trust_remote_code=True
+).eval()
+
+response, history = model.chat(tokenizer, "你好", history=None)
+print(response)
+```
+
+### 多机微调
+
+我们提供的脚本支持多机微调，可以参考[脚本](./finetune/finetune_lora_ds.sh)中的注释，在每个节点上正确设置相应的参数并启动训练脚本。关于多机分布式训练的更多信息，请参考[torchrun](https://pytorch.org/docs/stable/elastic/run.html)。
+
+注意： DeepSpeed ZeRO 3 对节点间通信速率的要求远大于 ZeRO 2，在多机微调的情况下会大幅降低训练速度。因此，我们不建议在多机微调的情况下使用 DeepSpeed ZeRO 3 配置。
+
 ### 显存占用及训练速度
+
 下面记录7B和14B模型在单GPU使用LoRA（LoRA (emb)指的是embedding和输出层参与训练，而LoRA则不优化这部分参数）和QLoRA时处理不同长度输入的显存占用和训练速度的情况。本次评测运行于单张A100-SXM4-80G GPU，使用CUDA 11.8和Pytorch 2.0，并使用了flash attention 2。我们统一使用batch size为1，gradient accumulation为8的训练配置，记录输入长度分别为256、512、1024、2048、4096和8192的显存占用（GB）和训练速度（s/iter）。我们还使用2张A100测了Qwen-7B的全参数微调。受限于显存大小，我们仅测试了256、512和1024token的性能。
+
+对于 Qwen-7B，我们额外测试了多机微调的性能。我们在两台服务器上运行评测，每台服务器包含两张A100-SXM4-80G GPU，其余配置与Qwen-7B的其他评测相同。多机微调的结果在表中以 LoRA (multinode) 标示。
 
 对于 Qwen-72B，我们测试了两种方案：1）使用4个 A100-SXM4-80G GPUs，通过 Lora + DeepSpeed ZeRO 3 微调和2）使用单张A100-SXM4-80G GPU，通过 QLora (int4) 微调。请注意，使用 LoRA (emb) 微调和不带 DeepSpeed ZeRO 3 的 LoRA 微调在4个A100-SXM4-80G GPUs 上都会出现OOM（你可以通过将`--deepspeed finetune/ds_config_zero3.json`参数传给[`finetune/finetune_lora_ds.sh`](finetune/finetune_lora_ds.sh)来打开 DeepSpeed ZeRO 3 配置）。
 
@@ -723,51 +796,83 @@ tokenizer.save_pretrained(new_model_directory)
 
 <table>
     <tr>
-      <th rowspan="2">Model Size</th><th rowspan="2">Method</th><th colspan="6" align="center">Sequence Length</th>
+      <th rowspan="2">Model Size</th><th rowspan="2">Method</th><th rowspan="2">#Nodes</th><th rowspan="2">#GPUs per node</th><th colspan="6" align="center">Sequence Length</th>
     </tr>
     <tr>
         <th align="center">256</th><th align="center">512</th><th align="center">1024</th><th align="center">2048</th><th align="center">4096</th><th align="center">8192</th>
     </tr>
-    </tr>
+    <tr>
+        <th rowspan="4">1.8B</th><td>LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">6.7G / 1.0s/it</td><td align="center">7.4G / 1.0s/it</td><td align="center">8.4G / 1.1s/it</td><td align="center">11.0G / 1.7s/it</td><td align="center">16.2G / 3.3s/it</td><td align="center">21.8G / 6.8s/it</td>
     </tr>
     <tr>
-        <th rowspan="4">1.8B</th><td>LoRA</td><td align="center">6.7G / 1.0s/it</td><td align="center">7.4G / 1.0s/it</td><td align="center">8.4G / 1.1s/it</td><td align="center">11.0G / 1.7s/it</td><td align="center">16.2G / 3.3s/it</td><td align="center">21.8G / 6.8s/it</td>
+        <td>LoRA (emb)</td>
+        <td>1</td><td>1</td>
+        <td align="center">13.7G / 1.0s/it</td><td align="center">14.0G / 1.0s/it</td><td align="center">14.0G / 1.1s/it</td><td align="center">15.1G / 1.8s/it</td><td align="center">19.7G / 3.4s/it</td><td align="center">27.7G / 7.0s/it</td>
     </tr>
     <tr>
-        <td>LoRA (emb)</td><td align="center">13.7G / 1.0s/it</td><td align="center">14.0G / 1.0s/it</td><td align="center">14.0G / 1.1s/it</td><td align="center">15.1G / 1.8s/it</td><td align="center">19.7G / 3.4s/it</td><td align="center">27.7G / 7.0s/it</td>
+        <td>Q-LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">5.8G / 1.4s/it</td><td align="center">6.0G / 1.4s/it</td><td align="center">6.6G / 1.4s/it</td><td align="center">7.8G / 2.0s/it</td><td align="center">10.2G / 3.4s/it</td><td align="center">15.8G / 6.5s/it</td>
     </tr>
     <tr>
-        <td>Q-LoRA</td><td align="center">5.8G / 1.4s/it</td><td align="center">6.0G / 1.4s/it</td><td align="center">6.6G / 1.4s/it</td><td align="center">7.8G / 2.0s/it</td><td align="center">10.2G / 3.4s/it</td><td align="center">15.8G / 6.5s/it</td>
+        <td>Full-parameter</td>
+        <td>1</td><td>1</td>
+        <td align="center">43.5G / 2.1s/it</td><td align="center">43.5G / 2.2s/it</td><td align="center">43.5G / 2.2s/it</td><td align="center">43.5G / 2.3s/it</td><td align="center">47.1G / 2.8s/it</td><td align="center">48.3G / 5.6s/it</td>
     </tr>
     <tr>
-        <td>Full-parameter</td><td align="center">43.5G / 2.1s/it</td><td align="center">43.5G / 2.2s/it</td><td align="center">43.5G / 2.2s/it</td><td align="center">43.5G / 2.3s/it</td><td align="center">47.1G / 2.8s/it</td><td align="center">48.3G / 5.6s/it</td>
+        <th rowspan="5">7B</th>
+        <td>LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">20.1G / 1.2s/it</td><td align="center">20.4G / 1.5s/it</td><td align="center">21.5G / 2.8s/it</td><td align="center">23.8G / 5.2s/it</td><td align="center">29.7G / 10.1s/it</td><td align="center">36.6G / 21.3s/it</td>
     </tr>
     <tr>
-        <th rowspan="4">7B</th><td>LoRA</td><td align="center">20.1G / 1.2s/it</td><td align="center">20.4G / 1.5s/it</td><td align="center">21.5G / 2.8s/it</td><td align="center">23.8G / 5.2s/it</td><td align="center">29.7G / 10.1s/it</td><td align="center">36.6G / 21.3s/it</td>
+        <td>LoRA (emb)</td>
+        <td>1</td><td>1</td>
+        <td align="center">33.7G / 1.4s/it</td><td align="center">34.1G / 1.6s/it</td><td align="center">35.2G / 2.9s/it</td><td align="center">35.1G / 5.3s/it</td><td align="center">39.2G / 10.3s/it</td><td align="center">48.5G / 21.7s/it</td>
     </tr>
     <tr>
-        <td>LoRA (emb)</td><td align="center">33.7G / 1.4s/it</td><td align="center">34.1G / 1.6s/it</td><td align="center">35.2G / 2.9s/it</td><td align="center">35.1G / 5.3s/it</td><td align="center">39.2G / 10.3s/it</td><td align="center">48.5G / 21.7s/it</td>
+        <td>Q-LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">11.5G / 3.0s/it</td><td align="center">11.5G / 3.0s/it</td><td align="center">12.3G / 3.5s/it</td><td align="center">13.9G / 7.0s/it</td><td align="center">16.9G / 11.6s/it</td><td align="center">23.5G / 22.3s/it</td>
     </tr>
     <tr>
-        <td>Q-LoRA</td><td align="center">11.5G / 3.0s/it</td><td align="center">11.5G / 3.0s/it</td><td align="center">12.3G / 3.5s/it</td><td align="center">13.9G / 7.0s/it</td><td align="center">16.9G / 11.6s/it</td><td align="center">23.5G / 22.3s/it</td>
+        <td>Full-parameter</td>
+<td>1</td><td>2</td>
+<td align="center">139.2G / 4.0s/it</td><td align="center">148.0G / 4.0s/it</td><td align="center">162.0G / 4.5s/it</td><td align="center">-</td><td align="center">-</td><td align="center">-</td>
     </tr>
     <tr>
-        <td>Full-parameter</td><td align="center">139.2G / 4.0s/it</td><td align="center">148.0G / 4.0s/it</td><td align="center">162.0G / 4.5s/it</td><td align="center">-</td><td align="center">-</td><td align="center">-</td>
+        <td>LoRA (multinode)</td>
+        <td>2</td><td>2</td>
+        <td align="center">74.7G / 2.09s/it</td><td align="center">77.6G / 3.16s/it</td><td align="center">84.9G / 5.17s/it</td><td align="center">95.1G / 9.25s/it</td><td align="center">121.1G / 18.1s/it</td><td align="center">155.5G / 37.4s/it</td>
     </tr>
     <tr>
-        <th rowspan="3">14B</th><td>LoRA</td><td align="center">34.6G / 1.6s/it</td><td align="center">35.1G / 2.4s/it</td><td align="center">35.3G / 4.4s/it</td><td align="center">37.4G / 8.4s/it</td><td align="center">42.5G / 17.0s/it</td><td align="center">55.2G / 36.0s/it</td>
+        <th rowspan="3">14B</th>
+        <td>LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">34.6G / 1.6s/it</td><td align="center">35.1G / 2.4s/it</td><td align="center">35.3G / 4.4s/it</td><td align="center">37.4G / 8.4s/it</td><td align="center">42.5G / 17.0s/it</td><td align="center">55.2G / 36.0s/it</td>
     </tr>
     <tr>
-        <td>LoRA (emb)</td><td align="center">51.2 / 1.7s/it</td><td align="center">51.1G / 2.6s/it</td><td align="center">51.5G / 4.6s/it</td><td align="center">54.1G / 8.6s/it</td><td align="center">56.8G / 17.2s/it</td><td align="center">67.7G / 36.3s/it</td>
+        <td>LoRA (emb)</td>
+        <td>1</td><td>1</td>
+        <td align="center">51.2 / 1.7s/it</td><td align="center">51.1G / 2.6s/it</td><td align="center">51.5G / 4.6s/it</td><td align="center">54.1G / 8.6s/it</td><td align="center">56.8G / 17.2s/it</td><td align="center">67.7G / 36.3s/it</td>
     </tr>
     <tr>
-        <td>Q-LoRA</td><td align="center">18.7G / 5.3s/it</td><td align="center">18.4G / 6.3s/it</td><td align="center">18.9G / 8.2s/it</td><td align="center">19.9G / 11.8s/it</td><td align="center">23.0G / 20.1s/it</td><td align="center">27.9G / 38.3s/it</td>
+        <td>Q-LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">18.7G / 5.3s/it</td><td align="center">18.4G / 6.3s/it</td><td align="center">18.9G / 8.2s/it</td><td align="center">19.9G / 11.8s/it</td><td align="center">23.0G / 20.1s/it</td><td align="center">27.9G / 38.3s/it</td>
     </tr>
     <tr>
-        <th rowspan="2">72B</th><td>LoRA + Deepspeed Zero3</td><td align="center">215.4G / 17.6s/it</td><td align="center">217.7G / 20.5s/it</td><td align="center">222.6G / 29.4s/it</td><td align="center">228.8G / 45.7s/it</td><td align="center">249.0G / 83.4s/it</td><td align="center">289.2G / 161.5s/it</td>
+        <th rowspan="2">72B</th>
+        <td>LoRA + Deepspeed Zero3</td>
+        <td>1</td><td>4</td>
+        <td align="center">215.4G / 17.6s/it</td><td align="center">217.7G / 20.5s/it</td><td align="center">222.6G / 29.4s/it</td><td align="center">228.8G / 45.7s/it</td><td align="center">249.0G / 83.4s/it</td><td align="center">289.2G / 161.5s/it</td>
     </tr>
     <tr>
-        <td>Q-LoRA</td><td align="center">61.4G / 27.4s/it</td><td align="center">61.4G / 31.5s/it</td><td align="center">62.9G / 41.4s/it</td><td align="center">64.1G / 59.5s/it</td><td align="center">68.0G / 97.7s/it</td><td align="center">75.6G / 179.8s/it</td>
+        <td>Q-LoRA</td>
+        <td>1</td><td>1</td>
+        <td align="center">61.4G / 27.4s/it</td><td align="center">61.4G / 31.5s/it</td><td align="center">62.9G / 41.4s/it</td><td align="center">64.1G / 59.5s/it</td><td align="center">68.0G / 97.7s/it</td><td align="center">75.6G / 179.8s/it</td>
     </tr>
 </table>
 
@@ -778,18 +883,13 @@ tokenizer.save_pretrained(new_model_directory)
 ### vLLM
 如希望部署及加速推理，我们建议你使用vLLM。
 
-如果你使用cuda12.1和pytorch2.1，可以直接使用以下命令安装vLLM。
+如果你使用**CUDA 12.1和PyTorch 2.1**，可以直接使用以下命令安装vLLM。
 
 ```bash
-# pip install vllm  # 该方法安装较快，但官方版本不支持量化模型
-
-# 下面方法支持int4量化 (int8量化模型支持将近期更新)，但安装更慢 (约~10分钟)。
-git clone https://github.com/QwenLM/vllm-gptq
-cd vllm-gptq
-pip install -e .
+pip install vllm
 ```
 
-否则请参考vLLM官方的[安装说明](https://docs.vllm.ai/en/latest/getting_started/installation.html)，或者安装我们[vLLM分支仓库](https://github.com/QwenLM/vllm-gptq)。
+否则请参考vLLM官方的[安装说明](https://docs.vllm.ai/en/latest/getting_started/installation.html)。
 
 #### vLLM + 类Transformer接口
 
@@ -890,7 +990,7 @@ python cli_demo.py
 我们提供了OpenAI API格式的本地API部署方法（感谢@hanpenggit）。在开始之前先安装必要的代码库：
 
 ```bash
-pip install fastapi uvicorn openai pydantic sse_starlette
+pip install fastapi uvicorn "openai<1.0" pydantic sse_starlette
 ```
 
 随后即可运行以下命令部署你的本地API：
@@ -950,6 +1050,7 @@ print(response.choices[0].message.content)
 1. 根据需要使用的镜像版本，安装相应版本的Nvidia驱动：
   - `qwenllm/qwen:cu117`（**推荐**）：`>= 515.48.07`
   - `qwenllm/qwen:cu114`（不支持flash-attention）：`>= 470.82.01`
+  - `qwenllm/qwen:cu121`：`>= 530.30.02`
   - `qwenllm/qwen:latest`：与`qwenllm/qwen:cu117`相同
 
 2. 安装并配置[docker](https://docs.docker.com/engine/install/)和[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)：

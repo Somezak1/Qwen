@@ -67,13 +67,13 @@ if [ "$BUNDLE_FINETUNE" = "true" ]; then
     cd /data/shared/Qwen
 
     # Full-finetune / LoRA.
-    pip3 install deepspeed peft
+    pip3 install deepspeed "peft==0.5.0"
 
     # Q-LoRA.
     apt update -y && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
         libopenmpi-dev openmpi-bin \
         && rm -rf /var/lib/apt/lists/*
-    pip3 install optimum auto-gptq mpi4py
+    pip3 install "optimum==1.12.0" "auto-gptq==0.4.2" mpi4py
 fi
 EOF
 
